@@ -1,11 +1,11 @@
+# Definitions and functions for working with Sysmon rules
 import logging
+import pathlib
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterator
+from typing import Iterator
 
-from lxml.etree import ElementTree, XMLParser
-from lxml.etree import parse as parse_etree
-from typer import FileText
+import lxml.etree
 
 from .filters import Filter
 from .filters import parse as parse_filter
@@ -15,11 +15,21 @@ _TECHNIQUE_PATTERN: re.Pattern = re.compile("technique_id=((?:T\d{4})(?:\.\d{3})
 
 @dataclass
 class Rule:
-    filter_relation: str  # valid types are "or" and "and"
-    event_type: str  # ex. ImageLoad, ProcessCreate
-    onmatch: str  # include or exclude
-    number: int  # tracks the order of rules
-    name: str  # name of rule or filter
+    """Rule class - representation for Sysmon Rule
+
+    filter_relation: str  - valid types are "or" and "and"
+    event_type: str  - ex. ImageLoad, ProcessCreate
+    onmatch: str  - include or exclude
+    number: int  - tracks the order of rules
+    name: str  - name of rule or filter
+    filters: list[Filter] - list of Filter objects
+    """
+
+    filter_relation: str
+    event_type: str
+    onmatch: str
+    number: int
+    name: str
     filters: list[Filter] = field(default_factory=list)
 
     def passes(self, event: dict) -> bool:
@@ -33,9 +43,14 @@ class Rule:
         Returns:
             bool: True if the event would pass the filter(s)
         """
-        if self.filter_relation == "or":
-            return any(f.passes(event) for f in self.filters)
-        return all(f.passes(event) for f in self.filters)
+        try:
+            if self.filter_relation == "or":
+                return any(f.passes(event) for f in self.filters)
+            return all(f.passes(event) for f in self.filters)
+        except TypeError as e:
+            logging.error(
+                f"Error with rule {self.name}:\n\tEvent:\t{event}\n\tRule:\t{self}"
+            )
 
 
 def rule_generator(rules: list[Rule], event: dict) -> Iterator[Rule]:
@@ -53,7 +68,7 @@ def rule_generator(rules: list[Rule], event: dict) -> Iterator[Rule]:
             yield rule
 
 
-def extract_rules(config: FileText) -> Dict[tuple, list[Rule]]:
+def extract_rules(config: pathlib.Path) -> dict[tuple, list[Rule]]:
     """Extracts sysmon rules, ensuring that they are numbered in order of precedence
 
     Args:
@@ -67,8 +82,9 @@ def extract_rules(config: FileText) -> Dict[tuple, list[Rule]]:
                     , value='C:\\')]]
                 }
     """
-    tree: ElementTree = parse_etree(
-        config, parser=XMLParser(remove_blank_text=True, remove_comments=True)
+    tree: lxml.etree.ElementTree = lxml.etree.parse(
+        config,
+        parser=lxml.etree.XMLParser(remove_blank_text=True, remove_comments=True),
     )
     rule_groups = tree.findall(".//RuleGroup")
     rules_dict = dict()
@@ -112,8 +128,9 @@ def extract_rules(config: FileText) -> Dict[tuple, list[Rule]]:
     return rules_dict
 
 
-def get_techniques(rules: Dict[tuple, list[Rule]]) -> Dict[str, int]:
-    """Parses rules dictionary (output of extract_rules) for any *include* rules with a MITRE ATT&CK Technique ID in them
+def get_techniques(rules: dict[tuple, list[Rule]]) -> dict[str, int]:
+    """Parses rules dictionary (output of extract_rules) for any *include* rules with a
+    MITRE ATT&CK Technique ID in them
 
     Args:
         rules (Dict[tuple, list[Rule]]): Output of extract_rules function

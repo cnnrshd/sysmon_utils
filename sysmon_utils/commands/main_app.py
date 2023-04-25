@@ -1,22 +1,29 @@
 import json
-import logging
-import os
 import pathlib
+import pdb
 import re
-import zipfile
-from dataclasses import dataclass, field
 from enum import Enum
 
-import yaml
 from config import config
+from lxml import etree
 from rich.progress import Progress
 from typer import Argument, BadParameter, FileText, FileTextWrite, Option, Typer
 from utils.arg_definitions import OUTFILE, SYSMON_CONFIG, WEL_LOGFILE
+from utils.dataset import (
+    extract_json_file,
+    filter_files_by_pattern,
+    get_working_datasets,
+)
 from utils.events import EVENT_LOOKUP
-from utils.rules import Rule, get_techniques, rule_generator
+from utils.merge import (
+    detect_file_format,
+    merge_sysmon_configs,
+    merge_with_base_config,
+    read_file_list,
+)
+from utils.rules import Rule, extract_rules, get_techniques, rule_generator
 
 console = config.console
-from utils.rules import extract_rules
 
 app = Typer(
     rich_markup_mode="markdown",
@@ -53,7 +60,7 @@ HELP_EMULATE = (
 
 @app.command(name="emulate", short_help=HELP_EMULATE)
 def emulate(
-    config: FileText = SYSMON_CONFIG,
+    config: pathlib.Path = SYSMON_CONFIG,
     logfile: FileText = WEL_LOGFILE,
     outfile: FileTextWrite = OUTFILE,
 ):
@@ -65,7 +72,10 @@ def emulate(
         event = json.loads(line)
         # filter
         event_id = event.get("EventID")
-        if event_id > len(EVENT_LOOKUP) - 1:
+        # TODO: Fix the lookup - also check for SourceName Sysmon
+        if (event_id > len(EVENT_LOOKUP) - 1) or (
+            event.get("SourceName") != "Microsoft-Windows-Sysmon"
+        ):
             continue
         event_type = EVENT_LOOKUP[event_id]
         # check includes
@@ -183,8 +193,10 @@ def true_verify(
     with open(logfile, mode="r") as f:
         for line in f:
             event = json.loads(line)
-            event_id = event.get("EventID")
-            if event_id > len(EVENT_LOOKUP) - 1:
+            event_id = event.get("EventID", 0)
+            if 0 < event_id > len(EVENT_LOOKUP) - 1 or (
+                event.get("SourceName") != "Microsoft-Windows-Sysmon"
+            ):
                 continue
             event_type = EVENT_LOOKUP[event_id]
             try:
@@ -262,51 +274,11 @@ def overlap(
 HELP_TEST_SECDATASETS = ":construction: Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html) Datasets"
 
 
-class DatasetFileTypes(str, Enum):
-    host = "Host"
-    network = "Network"
-
-
-@dataclass
-class DatasetFile:
-    github_link: str
-    file_type: DatasetFileTypes
-    local_path: pathlib.Path
-    local_zip: pathlib.Path
-
-
-# def _parse_dataset_file(f : dict[str, str]) -> DatasetFile:
-#     """Parse the file object in a Security Dataset-formatted YAML file. Assumes that the dataset folder is
-#     in the same location as the atomic folder.
-
-#     Ex: ../Security-Datasets/datasets/atomic/_metadata/SDWIN-201018195009.yaml
-#         ../Security-Datasets/master/datasets/atomic/windows/discovery/host/empire_shell_net_local_users.zip
-#     Split
-#     """
-#     local_path =
-
-
-@dataclass
-class Dataset:
-    metadata_path: pathlib.Path
-    title: str
-    files: list[DatasetFile] = field(default_factory=list)
-    techniques: list[str] = field(default_factory=list)
-
-
-def extract_json_file(zip_file_path, json_file_path):
-    with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-        for file in zip_ref.namelist():
-            if file.endswith(".json") and not file.startswith("."):
-                with zip_ref.open(file) as json_file:
-                    with open(json_file_path, "wb") as output_file:
-                        output_file.write(json_file.read())
-
-
 @app.command(
     name="secdatasets",
     short_help=HELP_TEST_SECDATASETS,
     help="""Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html).
+    Be sure to specify outfile
     This will essentially run `verify` against each matching dataset.
     First, this extracts rules from CONFIG. Then it parses the `SD-WIN*` metadata files in the **dataset** path.
     It determines which datasets to test against based on technique names found in CONFIG.
@@ -326,80 +298,48 @@ def secdatasets(
         callback=validate_regex,
         help="A filter to run against files in the **datasets** directory. Defaults to the SecurityDatasets convention for Windows.",
     ),
+    status_to_stderr: bool = Option(
+        True,
+        help="Output status messages, like progress bar, to stderr. Useful for redirecting stdout output to other files. Set to false and give a separate outfile for pretty printing.",
+    ),
 ):
     rules = extract_rules(config)
     target_techniques = set(get_techniques(rules).keys())
+    console.stderr = status_to_stderr
     console.print(f"Datasets: {datasets}")
-    filtered_files = [
-        file_path
-        for file_path in datasets.iterdir()
-        if path_filter_pattern.match(file_path.name)
-    ]
-    # console.print(filtered_files)
-    # filter again for all that have the correct files
-    working_datasets = []
-    base_atomic_path = str(datasets).split("/atomic/")[0]
-    for file_path in filtered_files:
-        with open(file_path, mode="r") as f:
-            dataset_dict = yaml.load(f, Loader=yaml.BaseLoader)
-            # if any technique matches, grab the whole dataset
-            techniques = [
-                f"{mapping.get('technique')}{'.' + mapping.get('sub-technique') if mapping.get('sub-technique') else ''}"
-                for mapping in dataset_dict.get("attack_mappings", [])
-            ]
-            if any(tech in target_techniques for tech in techniques):
-                working_datasets.append(
-                    {
-                        "title": dataset_dict.get("title"),
-                        "techniques": techniques,
-                        "host_zip_paths": [
-                            pathlib.Path(
-                                base_atomic_path
-                                + "/atomic/"
-                                + f.get("link").split("/atomic/")[1]
-                            )
-                            for f in dataset_dict.get("files")
-                            if f.get("type") == "Host"
-                        ],
-                        "host_json_paths": [
-                            pathlib.Path(
-                                base_atomic_path
-                                + "/atomic/"
-                                + f.get("link")
-                                .split("/atomic/")[1]
-                                .replace(".zip", ".json")
-                            )
-                            for f in dataset_dict.get("files")
-                            if f.get("type") == "Host"
-                        ],
-                    }
-                )
 
-    files_to_unzip = []
-    p = pathlib.Path
-    p.exists
-    for dataset in working_datasets:
-        # check if the json exists - if it doesn't add the zip file to a list of files to unzip
-        for json_path, zip_path in zip(
-            dataset.get("host_json_paths"), dataset.get("host_zip_paths")
-        ):
-            if not json_path.exists():
-                files_to_unzip.append(zip_path)
+    filtered_files = filter_files_by_pattern(datasets, path_filter_pattern)
+    # filter again for all that have the correct files
+
+    base_atomic_path = str(datasets).split("/atomic/")[0]
+
+    working_datasets = get_working_datasets(
+        filtered_files, target_techniques, base_atomic_path
+    )
+    # check files
     with Progress(console=console) as progress:
         task = progress.add_task(
-            description="Unzipping files...", total=len(files_to_unzip)
+            description="Checking that JSON files exist...", total=len(working_datasets)
         )
-        for zipped_file in files_to_unzip:
-            extract_json_file(
-                zipped_file, pathlib.Path(str(zipped_file).replace(".zip", ".json"))
-            )
-            progress.advance(task)
-    # console.print(target_techniques)
-    # all files are unzipped
-    for dataset in working_datasets:
-        for technique in dataset.get("techniques"):
-            for json_path in dataset.get("host_json_paths"):
-                try:
+        for dataset in working_datasets:
+            for json_path, zip_path in zip(
+                dataset.get("host_json_paths"), dataset.get("host_zip_paths")
+            ):
+                if not json_path.exists():
+                    console.print(f"Found missing JSON {json_path}")
+                    extract_json_file(zip_path, json_path)
+                progress.advance(task)
+    dataset_tests = []
+    with Progress(console=console) as progress:
+        task = progress.add_task(
+            description="Testing against datasets...", total=len(working_datasets)
+        )
+        for dataset in working_datasets:
+            test = {"dataset": dataset["title"], "techniques": []}
+            for technique in dataset.get("techniques"):
+                # test["techniques"] = technique
+                temp_technique = {"technique_id": technique, "matches": 0, "files": []}
+                for json_path in dataset.get("host_json_paths"):
                     match_count = true_verify(
                         rules,
                         json_path,
@@ -414,6 +354,50 @@ def secdatasets(
                         console.print(
                             f"Found {match_count} hits for {technique} in {dataset.get('title')}"
                         )
-                except Exception as e:
-                    console.print(f"ERROR PROCESSING DATASET {dataset} : {e}")
-    # console.print(working_datasets)
+                    temp_technique["files"].append(
+                        {"filename": str(json_path), "matches": match_count}
+                    )
+                    temp_technique["matches"] += match_count
+                test["techniques"].append(temp_technique)
+            dataset_tests.append(test)
+            progress.advance(task)
+    outfile.write(json.dumps(dataset_tests, indent=2))
+
+
+#######
+# Merge
+#######
+
+HELP_MERGE = ":construction: Merge the provided baseconfig with config files."
+
+
+@app.command(
+    name="merge",
+    short_help=HELP_MERGE,
+    help="""
+:construction:Merge multiple Sysmon configuration files based on their priority - highest at top. configlist should contain two columns, `filepath` and `priority`
+
+Slightly modified implementation of [merge_sysmon_configs.py](https://github.com/cnnrshd/sysmon-modular/blob/bfa7ad51e21b02ae6bc0ec0705969641567e4b48/merge_sysmon_configs.py)
+""",
+)
+def merge(
+    baseconfig: pathlib.Path = Argument(
+        ...,
+        help="Base config - template that other configs are merged into. Use for banners or top-level Sysmon options",
+    ),
+    configlist: pathlib.Path = Argument(
+        ..., help="CSV/TSV that holds columns of filepath and priority"
+    ),
+    outfile: FileTextWrite = OUTFILE,
+    force_grouprelation_or: bool = Option(
+        True,
+        help="Force GroupRelation setting to 'or', helpful for incorrectly-formatted xml files.",
+    ),
+    base_dir: pathlib.Path = Option(
+        "./", help="Base directory prepended to all filepaths in the configlist"
+    ),
+):
+    file_list = read_file_list(configlist, detect_file_format(configlist), base_dir)
+    merged_sysmon = merge_sysmon_configs(file_list, force_grouprelation_or)
+    full_sysmon_config = merge_with_base_config(merged_sysmon, baseconfig)
+    outfile.write(etree.tostring(full_sysmon_config, pretty_print=True).decode())

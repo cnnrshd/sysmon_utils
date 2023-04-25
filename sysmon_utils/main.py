@@ -3,7 +3,7 @@ __author__ = "Connor Shade"
 
 from rich.traceback import install as rich_log_install
 
-rich_log_install(show_locals=True)
+rich_log_install(show_locals=False)
 import logging
 
 from commands.main_app import app as main_app

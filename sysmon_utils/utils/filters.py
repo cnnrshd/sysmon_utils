@@ -1,3 +1,4 @@
+# Definitions and functions for a Sysmon Filter
 from dataclasses import dataclass
 
 from lxml.etree import Element
@@ -5,10 +6,22 @@ from lxml.etree import Element
 
 @dataclass
 class Filter:
-    field: str  # ex. Image - used for lookup
-    name: str  # ex. "technique_id=T1055"
-    condition: str  # ex. "begin with"
-    value: str  # ex. "C:\Temp" - what is filtered
+    """Representation of a Sysmon Filter
+
+    field: str - Image - used for lookup
+    name: str  - Extracted from a filter name or empty "technique_id=T1055"
+    condition: str - the comparison function to use "begin with"
+    value: str  - what is filtered, ex. "C:\Temp"
+
+    Raises:
+        ValueError: On invalid condition
+
+    """
+
+    field: str
+    name: str
+    condition: str
+    value: str
 
     def passes(self, event: dict) -> bool:
         # event is a dict holding Sysmon event field and values
