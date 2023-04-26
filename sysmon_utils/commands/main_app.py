@@ -24,6 +24,7 @@ from utils.merge import (
 from utils.rules import Rule, extract_rules, get_techniques, rule_generator
 
 console = config.console
+DEBUG = config.debug
 
 app = Typer(
     rich_markup_mode="markdown",
@@ -72,7 +73,6 @@ def emulate(
         event = json.loads(line)
         # filter
         event_id = event.get("EventID")
-        # TODO: Fix the lookup - also check for SourceName Sysmon
         if (event_id > len(EVENT_LOOKUP) - 1) or (
             event.get("SourceName") != "Microsoft-Windows-Sysmon"
         ):
@@ -124,7 +124,7 @@ _TECHNIQUES_OUTPUT_FORMAT: TechniquesOutputFormat = Option(
     TechniquesOutputFormat.json, help="Output format style."
 )
 
-HELP_TECHNIQUES = "Return techniques and their count from provided CONFIG."
+HELP_TECHNIQUES = "Return techniques and their count from provided CONFIG. Useful for building an ATT&CK Matrix."
 
 
 @app.command(
@@ -168,15 +168,6 @@ class VerifyMethod(str, Enum):
     count = "count"
     exitcode = "exitcode"
 
-
-class VerifyOutputFormat(str, Enum):
-    json = "json"
-    terminal = "terminal"
-
-
-_VERIFY_OUTPUT_FORMAT: VerifyOutputFormat = Option(
-    VerifyOutputFormat.terminal, help="Output format style."
-)
 
 HELP_VERIFY = ":construction: Parse LOGFILE with CONFIG, determine if PATTERN is found in any rule that passes the CONFIG filter."
 
@@ -233,10 +224,38 @@ def true_verify(
 def verify(
     config: FileText = SYSMON_CONFIG,
     outfile: FileTextWrite = OUTFILE,
-    outformat: VerifyOutputFormat = _VERIFY_OUTPUT_FORMAT,
     logfile: FileText = WEL_LOGFILE,
+    pattern: str = Argument(
+        ...,
+        callback=validate_regex,
+        help="""A valid regular expression. If targeting a specific technique_id, try `.*TXXXX.*`, where TXXXX is replaced by the
+         technique ID. Some shells might interpret your wildcards as a glob, use debug or auto-wildcard options if there's an issue.""",
+    ),
+    verify_method: VerifyMethod = Option(
+        VerifyMethod.count,
+        help=f"""How to check for the technique. {VerifyMethod.exitcode} and {VerifyMethod.boolean} will exit as soon as a hit 
+        is found. **{VerifyMethod.exitcode}** will return 0 if found, 1 if not found (found is seen as success/normal operation
+        , return is in the exit code) while **{VerifyMethod.boolean}** returns 0 if not found, 1 if found, return is printed 
+        to outfile - essentially **{VerifyMethod.count}** with a max of 1. 
+        **{VerifyMethod.count}** returns the count of hits, and parses the entire log file.""",
+    ),
+    wildcard_pattern: bool = Option(
+        False,
+        help=":construction: **NOT IMPLEMENTED YET** :construction: Wraps the provided pattern in wildcard characters. Useful when dealing with shell escapes.",
+    ),
 ):
-    pass
+    if DEBUG:
+        console.print(f"Working with pattern: {pattern}")
+    if wildcard_pattern:
+        pass
+    rules = extract_rules(config)
+    code = true_verify(rules, logfile, pattern, verify_method)
+    if verify_method == VerifyMethod.exitcode:
+        if code == 1:
+            exit(0)
+        exit(1)
+    else:
+        outfile.write(str(code))
 
 
 #########
