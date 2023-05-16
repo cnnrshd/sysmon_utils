@@ -1,15 +1,9 @@
 import json
 import os
 import pathlib
-import pdb
 import re
 from dataclasses import asdict, dataclass
 from enum import Enum
-
-from rich.markdown import Markdown
-from rich.traceback import install as rich_log_install
-
-rich_log_install(show_locals=False)
 
 from config import config
 from lxml import etree
@@ -38,6 +32,7 @@ app = Typer(
 )
 
 # TODO: Move the FileText -> Path
+# TODO: generalize the verify -> overruled -> print chunks, make it a function
 
 
 def validate_regex(value: str) -> re.Pattern:
@@ -57,14 +52,16 @@ def validate_directory(value: str) -> pathlib.Path:
     raise BadParameter(f"Invalid directory value {value}")
 
 
-def get_event(line: str) -> dict:
+def _get_event(line: str) -> dict:
+    """Helper function to extract event details from a JSON string and return a dict"""
     event = json.loads(line)
     if isinstance(event, str):
         raise ValueError("Improper conversion - JSON returned string")
     return event
 
 
-def valid_sysmon_event(event: dict) -> bool:
+def _valid_sysmon_event(event: dict) -> bool:
+    """Helper function to determine if a Windows Event is Sysmon."""
     if event.get("EventSourceName") != "Microsoft-Windows-Sysmon":
         return False
     if event.get("EventID", 100) > len(EVENT_LOOKUP) - 1:
@@ -77,7 +74,7 @@ def valid_sysmon_event(event: dict) -> bool:
 #########
 
 HELP_EMULATE = (
-    ":construction: Run LOGS against CONFIG returning filtered and tagged logs"
+    "Run LOGS against CONFIG returning filtered and tagged logs"
 )
 
 
@@ -87,18 +84,20 @@ def emulate(
     logfile: pathlib.Path = WEL_LOGFILE,
     outfile: FileTextWrite = OUTFILE,
 ):
-    """:construction: WIP :construction: Entered emulate main - this section is WIP
-
-    Longer-form help goes here i think"""
+    """Emulate - Runs LOGS through CONFIG, setting rule names and excluding/including
+    data as Sysmon would. Suggested use case is for comparing raw Sysmon Event Log sizes
+    to filtered sizes for an idea of how many events can be excluded.
+    
+    Example: sysmon_utils emulate sysmon_config.xml atomic-redteam-t1003-01.json --outfile filtered-t1003-01.json"""
     rules = extract_rules(config)
-    # if DEBUG:
-    console.print(f"opening logfile {logfile}")
+    if DEBUG:
+        console.print(f"Opening logfile {logfile}")
     with open(logfile, mode="r") as f:
         for line in f:
-            event = get_event(line)
+            event = _get_event(line)
             # filter
             event_id = event.get("EventID")
-            if not valid_sysmon_event(event):
+            if not _valid_sysmon_event(event):
                 continue
             event_type = EVENT_LOOKUP[event_id]
             # check includes
@@ -191,7 +190,7 @@ class VerifyMethod(str, Enum):
     exitcode = "exitcode"
 
 
-HELP_VERIFY = ":construction: Parse LOGFILE with CONFIG, determine if PATTERN is found in any rule that passes the CONFIG filter."
+HELP_VERIFY = "Parse LOGFILE with CONFIG, determine if PATTERN is found in any rule that passes the CONFIG filter."
 
 
 def verify(
@@ -206,12 +205,12 @@ def verify(
     with open(logfile, mode="r") as f:
         for line in f:
             try:
-                event = get_event(line)
+                event = _get_event(line)
             except ValueError as e:
                 # console.stderr = True
                 console.print(f"Error with logfile {logfile}")
                 continue
-            if not valid_sysmon_event(event):
+            if not _valid_sysmon_event(event):
                 continue
             event_type = EVENT_LOOKUP[event.get("EventID", 0)]
             try:
@@ -268,6 +267,8 @@ def entry_verify(
         help="Wraps the provided pattern in wildcard characters. Useful when dealing with shell escapes.",
     ),
 ):
+    """verify - Parses LOGFILE with CONFIG as Sysmon would (similar to `emulate`) and returns if
+    PATTERN has been found in any non-excluded events."""
     if DEBUG:
         console.print(f"Working with pattern: {pattern.pattern}")
     if wildcard_pattern:
@@ -288,7 +289,7 @@ def entry_verify(
 # Overlap
 #########
 
-HELP_OVERLAP = ":construction: Returns any logs and rules where a PATTERN matching rule is hit AFTER a non-matching rule."
+HELP_OVERLAP = "Returns any logs and rules where a PATTERN matching rule is hit AFTER a non-matching rule."
 
 
 @dataclass
@@ -306,8 +307,8 @@ def overruled(
 ):
     with open(logfile, mode="r") as f:
         for line in f:
-            event = get_event(line)
-            if not valid_sysmon_event(event):
+            event = _get_event(line)
+            if not _valid_sysmon_event(event):
                 continue
             event_type = EVENT_LOOKUP[event.get("EventID", 0)]
             try:
@@ -355,21 +356,33 @@ def overruled(
 @app.command(name="overruled", short_help=HELP_OVERLAP)
 def entry_overruled(
     config: pathlib.Path = SYSMON_CONFIG,
-    logfile: FileText = WEL_LOGFILE,
+    logfile: pathlib.Path = WEL_LOGFILE,
     outfile: FileTextWrite = OUTFILE,
     pattern: str = Option(".*(technique_id=T\d{4}).*", callback=validate_regex),
+    wildcard_pattern: bool = Option(
+        False,
+        help="Wraps the provided pattern in wildcard characters. Useful when dealing with shell escapes.",
+    ),
+
 ):
-    """Runs LOGS against CONFIG and searches for areas where a specified PATTERN (Defaulting to regex for MITRE ATT&CK Technique IDs) is hit AFTER a rule that does not match the pattern
-    Expected output would be:
-        LOG Line 5 OVERLAP:
-            #1  PowerShell DragNet
-            #2  Invoke-Mimikatz
+    """Runs LOGS against CONFIG and searches for areas where a specified PATTERN (Defaulting to regex for 
+    MITRE ATT&CK Technique IDs) is hit AFTER a rule that does not match the pattern
     """
-    console.print(pattern)
-    for line in config:
-        if match := pattern.match(line):
-            console.print(f"Match found: {match}")
-    pass
+    # console.print(pattern)
+    rules = extract_rules(config)
+    if wildcard_pattern:
+        pattern = re.compile(pattern=f".*{pattern.pattern}.*")
+    overruled_ret: OverruledReturn = overruled(
+                    rules, logfile, pattern
+                )
+    if overruled_ret.hit_rule:
+        console.print(f"[green]FOUND pattern {pattern} in {logfile}")
+        for r in overruled_ret.overrules:
+            console.print(f"[red]OVERRULED by {asdict(r)}")
+        if overruled_ret.exclude_rule:
+            console.print(f"[red]EXCLUDED by {asdict(overruled_ret.hit_rule)}")
+    else:
+        console.print(f"[red]MISSING pattern {pattern} in {logfile}")
 
 
 ######
@@ -377,13 +390,13 @@ def entry_overruled(
 ######
 
 
-HELP_TEST_SECDATASETS = ":construction: Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html) Datasets"
+HELP_TEST_SECDATASETS = ":construction: WIP :construction: Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html) Datasets"
 
 
 @app.command(
     name="secdatasets",
     short_help=HELP_TEST_SECDATASETS,
-    help="""Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html).
+    help=""":construction: WIP :construction: Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html).
     Be sure to specify outfile
     This will essentially run `verify` against each matching dataset.
     First, this extracts rules from CONFIG. Then it parses the `SD-WIN*` metadata files in the **dataset** path.
@@ -446,6 +459,7 @@ def secdatasets(
                 # test["techniques"] = technique
                 temp_technique = {"technique_id": technique, "matches": 0, "files": []}
                 for json_path in dataset.get("host_json_paths"):
+                    # TODO: First check verify - if false, check overlap
                     match_count = verify(
                         rules,
                         json_path,
@@ -474,14 +488,14 @@ def secdatasets(
 # Merge
 #######
 
-HELP_MERGE = ":construction: Merge the provided baseconfig with config files."
+HELP_MERGE = "Merge the provided baseconfig with config files."
 
 
 @app.command(
     name="merge",
     short_help=HELP_MERGE,
     help="""
-:construction:Merge multiple Sysmon configuration files based on their priority - highest at top. configlist should contain two columns, `filepath` and `priority`
+Merge multiple Sysmon configuration files based on their priority - highest at top. configlist should contain two columns, `filepath` and `priority`
 
 Slightly modified implementation of [merge_sysmon_configs.py](https://github.com/cnnrshd/sysmon-modular/blob/bfa7ad51e21b02ae6bc0ec0705969641567e4b48/merge_sysmon_configs.py)
 """,
