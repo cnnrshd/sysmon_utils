@@ -1,8 +1,15 @@
 import json
+import os
 import pathlib
 import pdb
 import re
+from dataclasses import asdict, dataclass
 from enum import Enum
+
+from rich.markdown import Markdown
+from rich.traceback import install as rich_log_install
+
+rich_log_install(show_locals=False)
 
 from config import config
 from lxml import etree
@@ -50,6 +57,21 @@ def validate_directory(value: str) -> pathlib.Path:
     raise BadParameter(f"Invalid directory value {value}")
 
 
+def get_event(line: str) -> dict:
+    event = json.loads(line)
+    if isinstance(event, str):
+        raise ValueError("Improper conversion - JSON returned string")
+    return event
+
+
+def valid_sysmon_event(event: dict) -> bool:
+    if event.get("EventSourceName") != "Microsoft-Windows-Sysmon":
+        return False
+    if event.get("EventID", 100) > len(EVENT_LOOKUP) - 1:
+        return False
+    return True
+
+
 #########
 # Emulate
 #########
@@ -62,52 +84,52 @@ HELP_EMULATE = (
 @app.command(name="emulate", short_help=HELP_EMULATE)
 def emulate(
     config: pathlib.Path = SYSMON_CONFIG,
-    logfile: FileText = WEL_LOGFILE,
+    logfile: pathlib.Path = WEL_LOGFILE,
     outfile: FileTextWrite = OUTFILE,
 ):
     """:construction: WIP :construction: Entered emulate main - this section is WIP
 
     Longer-form help goes here i think"""
     rules = extract_rules(config)
-    for line in logfile:
-        event = json.loads(line)
-        # filter
-        event_id = event.get("EventID")
-        if (event_id > len(EVENT_LOOKUP) - 1) or (
-            event.get("SourceName") != "Microsoft-Windows-Sysmon"
-        ):
-            continue
-        event_type = EVENT_LOOKUP[event_id]
-        # check includes
-        try:
-            include_rules: list[Rule] = rules[(event_type, "include")]
-            if first_matching_rule := next(
-                (rule for rule in rule_generator(include_rules, event)), None
-            ):
-                event["RuleName"] = first_matching_rule.name
-            else:
+    # if DEBUG:
+    console.print(f"opening logfile {logfile}")
+    with open(logfile, mode="r") as f:
+        for line in f:
+            event = get_event(line)
+            # filter
+            event_id = event.get("EventID")
+            if not valid_sysmon_event(event):
                 continue
-        except KeyError:  # No includes for this event type
-            continue
-        # check excludes
-        try:
-            exclude_rules = rules[(event_type, "exclude")]
-            if first_matching_rule := next(
-                (rule for rule in rule_generator(exclude_rules, event)), None
-            ):
-                # it is excluded
+            event_type = EVENT_LOOKUP[event_id]
+            # check includes
+            try:
+                include_rules: list[Rule] = rules[(event_type, "include")]
+                if first_matching_rule := next(
+                    (rule for rule in rule_generator(include_rules, event)), None
+                ):
+                    event["RuleName"] = first_matching_rule.name
+                else:
+                    continue
+            except KeyError:  # No includes for this event type
                 continue
-        except KeyError:
-            pass
+            # check excludes
+            try:
+                exclude_rules = rules[(event_type, "exclude")]
+                if first_matching_rule := next(
+                    (rule for rule in rule_generator(exclude_rules, event)), None
+                ):
+                    # it is excluded
+                    continue
+            except KeyError:
+                pass
 
-        outfile.write(
-            json.dumps(
-                event,
-                indent=None,
+            outfile.write(
+                json.dumps(
+                    event,
+                    indent=None,
+                )
+                + "\n"
             )
-            + "\n"
-        )
-    pass
 
 
 ############
@@ -172,8 +194,8 @@ class VerifyMethod(str, Enum):
 HELP_VERIFY = ":construction: Parse LOGFILE with CONFIG, determine if PATTERN is found in any rule that passes the CONFIG filter."
 
 
-def true_verify(
-    rules,
+def verify(
+    rules: dict[tuple, list[Rule]],
     logfile: pathlib.Path,
     pattern: re.Pattern,
     method: VerifyMethod = VerifyMethod.boolean,
@@ -183,13 +205,15 @@ def true_verify(
     match_count = 0
     with open(logfile, mode="r") as f:
         for line in f:
-            event = json.loads(line)
-            event_id = event.get("EventID", 0)
-            if 0 < event_id > len(EVENT_LOOKUP) - 1 or (
-                event.get("SourceName") != "Microsoft-Windows-Sysmon"
-            ):
+            try:
+                event = get_event(line)
+            except ValueError as e:
+                # console.stderr = True
+                console.print(f"Error with logfile {logfile}")
                 continue
-            event_type = EVENT_LOOKUP[event_id]
+            if not valid_sysmon_event(event):
+                continue
+            event_type = EVENT_LOOKUP[event.get("EventID", 0)]
             try:
                 include_rules: list[Rule] = rules[(event_type, "include")]
                 if first_matching_rule := next(
@@ -221,10 +245,10 @@ def true_verify(
 
 
 @app.command(name="verify", short_help=HELP_VERIFY)
-def verify(
-    config: FileText = SYSMON_CONFIG,
+def entry_verify(
+    config: pathlib.Path = SYSMON_CONFIG,
     outfile: FileTextWrite = OUTFILE,
-    logfile: FileText = WEL_LOGFILE,
+    logfile: pathlib.Path = WEL_LOGFILE,
     pattern: str = Argument(
         ...,
         callback=validate_regex,
@@ -241,15 +265,17 @@ def verify(
     ),
     wildcard_pattern: bool = Option(
         False,
-        help=":construction: **NOT IMPLEMENTED YET** :construction: Wraps the provided pattern in wildcard characters. Useful when dealing with shell escapes.",
+        help="Wraps the provided pattern in wildcard characters. Useful when dealing with shell escapes.",
     ),
 ):
     if DEBUG:
-        console.print(f"Working with pattern: {pattern}")
+        console.print(f"Working with pattern: {pattern.pattern}")
     if wildcard_pattern:
-        pass
+        pattern = re.compile(pattern=f".*{pattern.pattern}.*")
+        if DEBUG:
+            console.print(f"Pattern has been wild-carded to {pattern.pattern}")
     rules = extract_rules(config)
-    code = true_verify(rules, logfile, pattern, verify_method)
+    code = verify(rules, logfile, pattern, verify_method)
     if verify_method == VerifyMethod.exitcode:
         if code == 1:
             exit(0)
@@ -265,9 +291,70 @@ def verify(
 HELP_OVERLAP = ":construction: Returns any logs and rules where a PATTERN matching rule is hit AFTER a non-matching rule."
 
 
-@app.command(name="overlap", short_help=HELP_OVERLAP)
-def overlap(
-    config: FileText = SYSMON_CONFIG,
+@dataclass
+class OverruledReturn:
+    event: dict
+    overrules: list[Rule]
+    hit_rule: Rule
+    exclude_rule: Rule
+
+
+def overruled(
+    rules: dict[tuple, list[Rule]],
+    logfile: pathlib.Path,
+    pattern: re.Pattern,
+):
+    with open(logfile, mode="r") as f:
+        for line in f:
+            event = get_event(line)
+            if not valid_sysmon_event(event):
+                continue
+            event_type = EVENT_LOOKUP[event.get("EventID", 0)]
+            try:
+                overrules = []
+                exclude_rule = None
+                goal_rule = None
+                include_rules: list[Rule] = rules[(event_type, "include")]
+                # grab all matching rules
+                if matching_rules := list(
+                    rule for rule in rule_generator(include_rules, event)
+                ):
+                    # check if any have a key name
+                    pattern_matching_rules_mask = list(
+                        bool(pattern.match(r.name)) for r in matching_rules
+                    )
+                    if any(pattern_matching_rules_mask):
+                        # if it's the first, continue. If it's not the first, add all overrules to a list
+                        for i, m in enumerate(pattern_matching_rules_mask):
+                            if not m:
+                                overrules.append(matching_rules[i])
+                            if m:
+                                goal_rule = m
+                                break
+                        # check excludes
+                        try:
+                            exclude_rules = rules[(event_type, "exclude")]
+                            if first_matching_rule := next(
+                                (rule for rule in rule_generator(exclude_rules, event)),
+                                None,
+                            ):
+                                exclude_rule = first_matching_rule
+                        except KeyError:  # no excludes for this event
+                            pass
+                        if overrules or exclude_rule:
+                            return OverruledReturn(
+                                event, overrules, goal_rule, exclude_rule
+                            )
+                    else:
+                        continue
+            except KeyError:  # No includes for this event type
+                continue
+    return None
+
+
+@app.command(name="overruled", short_help=HELP_OVERLAP)
+def entry_overruled(
+    config: pathlib.Path = SYSMON_CONFIG,
     logfile: FileText = WEL_LOGFILE,
     outfile: FileTextWrite = OUTFILE,
     pattern: str = Option(".*(technique_id=T\d{4}).*", callback=validate_regex),
@@ -359,7 +446,7 @@ def secdatasets(
                 # test["techniques"] = technique
                 temp_technique = {"technique_id": technique, "matches": 0, "files": []}
                 for json_path in dataset.get("host_json_paths"):
-                    match_count = true_verify(
+                    match_count = verify(
                         rules,
                         json_path,
                         re.compile(f".*{technique}.*"),
@@ -420,3 +507,94 @@ def merge(
     merged_sysmon = merge_sysmon_configs(file_list, force_grouprelation_or)
     full_sysmon_config = merge_with_base_config(merged_sysmon, baseconfig)
     outfile.write(etree.tostring(full_sysmon_config, pretty_print=True).decode())
+
+
+@app.command(
+    name="atomictests",
+    short_help="Checks for techniques found or overruled. Used for testing configs.",
+    help="""
+Run against the directory of my [auto_art_collection](https://github.com/cnnrshd/atomic-datasets-utils#auto_art_collectionps1) tool.
+Iterates through the provided directory, looks for status files, extracts all "successful" tests. For each test:
+1. Extracts the technique being tested
+2. Runs the logs against the Sysmon config, looking to validate the technique
+3. If technique is not found, checks for overlaps
+4. Outputs data on techniques tested, test numbers, whether an event was detected or overruled.
+Calls `verify` and `overruled` functions.""",
+)
+def atomictests(
+    config: pathlib.Path = SYSMON_CONFIG,
+    successful_tests: pathlib.Path = Argument(
+        ..., help="Path to the successful_tests.json file"
+    ),
+):
+    rules = extract_rules(config)
+    with open(successful_tests, mode="r") as f:
+        tests_list = json.load(f)
+    list_detected = []
+    list_missing = []
+    list_overruled = []
+    list_excluded = []
+    with Progress(console=console) as progress:
+        task = progress.add_task(
+            description="Checking for techniques in files...", total=len(tests_list)
+        )
+        for test in tests_list:
+            working_log_file = next(
+                (
+                    f"{test['FilePath']}{l}"
+                    for l in os.listdir(test["FilePath"])
+                    if "logs_" in l
+                ),
+                None,
+            )
+            if working_log_file is None:
+                console.print(
+                    f"[red]Missing log file for filepath {test['FilePath']}, skipping"
+                )
+                continue
+            working_pattern = re.compile(pattern=f".*{test['Technique']}.*")
+            hit_count = verify(
+                rules, working_log_file, working_pattern, VerifyMethod.boolean
+            )
+            if not hit_count:
+                console.print(
+                    f"[yellow]NOT FOUND {test['Technique']} Test {test['TestNumber']} - checking overruled"
+                )
+                overruled_ret: OverruledReturn = overruled(
+                    rules, working_log_file, working_pattern
+                )
+                if overruled_ret:
+                    if overruled_ret.overrules:
+                        # list_overruled.append({"TestNumber" : test["TestNumber"], "event" : overruled_ret.event, "overruled_ret" : overruled_ret})
+                        console.print(
+                            f"[orange]OVERRULED {test['Technique']} Test {test['TestNumber']} in {working_log_file}"
+                        )
+                        console.print("OVERRULING RULES:")
+                        console.print_json(
+                            json.dumps([asdict(r) for r in overruled_ret.overrules])
+                        )
+                        console.print("EVENT")
+                        console.print_json(json.dumps(overruled_ret.event))
+                    elif overruled_ret.exclude_rule:
+                        # list_excluded.append({"TestNumber" : test["TestNumber"], "event" : overruled_ret.event, "overruled_ret" : overruled_ret})
+                        console.print(
+                            f"[orange]EXCLUDED {test['Technique']} Test {test['TestNumber']} in {working_log_file}"
+                        )
+                        console.print("EXCLUDE RULE:")
+                        console.print_json(
+                            json.dumps(asdict(overruled_ret.exclude_rule))
+                        )
+                        console.print("EVENT")
+                        console.print_json(json.dumps(overruled_ret.event))
+                else:
+                    # list_missing.append(test["TestNumber"])
+                    console.print(
+                        f"[red]MISSING {test['Technique']} Test {test['TestNumber']} in {working_log_file}"
+                    )
+            else:
+                # list_detected.append(test["TestNumber"])
+                console.print(
+                    f"[blue]FOUND {test['Technique']} Test {test['TestNumber']} in {working_log_file}"
+                )
+            progress.advance(task)
+    # make a markdown doc

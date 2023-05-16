@@ -54,7 +54,7 @@ class Rule:
 
 
 def rule_generator(rules: list[Rule], event: dict) -> Iterator[Rule]:
-    """Simple generator that returns the first matching rule
+    """Simple generator that returns all matching rules
 
     Args:
         rules (list[Rule]): List of rules to test against. Can be include or exclude
