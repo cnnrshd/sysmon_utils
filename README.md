@@ -1,6 +1,10 @@
 # sysmon_utils
 
-Utilities for working with and testing Sysmon configs against Windows Event Logs. Works in combination with my [atomic-datasets-utils](https://github.com/cnnrshd/atomic-datasets-utils) to support my [sysmon-modular](https://github.com/cnnrshd/sysmon-modular) work. My goal is to make it easier to modify, verify, and test Sysmon configs.
+## NOTICE - In Development
+
+This library is still in development and subject to change. Some commands are a WIP, file and folder structure will be modified. Be sure to use `sysmon_utils --help` to get a list of all commands.
+
+Utilities for working with and testing Sysmon configs against Windows Event Logs. Works in combination with my [atomic-datasets-utils](https://github.com/cnnrshd/atomic-datasets-utils) to support my [sysmon-modular](https://github.com/cnnrshd/sysmon-modular) work. My goal is to make it easier to modify, verify, and test Sysmon configs. Development is sponsored by my (Connor Shade) employer [QOMPLX](https://www.qomplx.com/).
 
 ## Commands
 

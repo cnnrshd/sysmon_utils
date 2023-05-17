@@ -6,8 +6,8 @@ from rich.traceback import install as rich_log_install
 rich_log_install(show_locals=False)
 import logging
 
-from commands.main_app import app as main_app
-from config import config
+from sysmon_utils.commands.main_app import app as main_app
+from sysmon_utils.config import config
 from typer import Option
 
 console = config.console

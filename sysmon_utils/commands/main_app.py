@@ -5,24 +5,24 @@ import re
 from dataclasses import asdict, dataclass
 from enum import Enum
 
-from config import config
+from sysmon_utils.config import config
 from lxml import etree
 from rich.progress import Progress
 from typer import Argument, BadParameter, FileText, FileTextWrite, Option, Typer
-from utils.arg_definitions import OUTFILE, SYSMON_CONFIG, WEL_LOGFILE
-from utils.dataset import (
+from sysmon_utils.utils.arg_definitions import OUTFILE, SYSMON_CONFIG, WEL_LOGFILE
+from sysmon_utils.utils.dataset import (
     extract_json_file,
     filter_files_by_pattern,
     get_working_datasets,
 )
-from utils.events import EVENT_LOOKUP
-from utils.merge import (
+from sysmon_utils.utils.events import EVENT_LOOKUP
+from sysmon_utils.utils.merge import (
     detect_file_format,
     merge_sysmon_configs,
     merge_with_base_config,
     read_file_list,
 )
-from utils.rules import Rule, extract_rules, get_techniques, rule_generator
+from sysmon_utils.utils.rules import Rule, extract_rules, get_techniques, rule_generator
 
 console = config.console
 DEBUG = config.debug
@@ -390,7 +390,7 @@ def entry_overruled(
 ######
 
 
-HELP_TEST_SECDATASETS = ":construction: WIP :construction: Tests CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html) Datasets"
+HELP_TEST_SECDATASETS = ":construction: WIP :construction: Tts CONFIG against data from [Security-Datasets](https://securitydatasets.com/introduction.html) Datasets"
 
 
 @app.command(

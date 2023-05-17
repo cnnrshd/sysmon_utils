@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "sysmon-utils"
+version = "0.1.2"
+description = "A tool for working with and testing Sysmon configs."
+authors = ["Connor Shade <cnnrshd@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "sysmon_utils"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+typer = {extras = ["all"], version = "^0.9.0"}
+rich = "^13.3.5"
+lxml = "^4.9.2"
+PyYAML = "^6.0"
+packaging = "^23.1"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.3.0"
+
+[tool.poetry.scripts]
+sysmon_utils = "sysmon_utils.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
