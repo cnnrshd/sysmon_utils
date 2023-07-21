@@ -1,10 +1,30 @@
 # sysmon_utils
 
+[Check it out on PyPi](https://pypi.org/project/sysmon-utils/)!
+
 ## NOTICE - In Development
 
 This library is still in development and subject to change. Some commands are a WIP, file and folder structure will be modified. Be sure to use `sysmon_utils --help` to get a list of all commands.
 
 Utilities for working with and testing Sysmon configs against Windows Event Logs. Works in combination with my [atomic-datasets-utils](https://github.com/cnnrshd/atomic-datasets-utils) to support my [sysmon-modular](https://github.com/cnnrshd/sysmon-modular) work. My goal is to make it easier to modify, verify, and test Sysmon configs. Development is sponsored by my (Connor Shade) employer [QOMPLX](https://www.qomplx.com/).
+
+## Installation
+
+I recommend performing all installations in a virtual environment - `python3.10 -m venv .venv`.
+
+### Pip
+
+```sh
+python3.10 -m pip install sysmon_utils
+```
+
+### Poetry
+
+```sh
+git clone git@github.com:cnnrshd/sysmon_utils.git
+cd sysmon_utils
+poetry install
+```
 
 ## Commands
 
@@ -24,7 +44,7 @@ A better implementation of my [merge_sysmon_configs](https://github.com/cnnrshd/
 
 Detects if an improperly-ordered rule overrules a specific pattern. I've seen this a lot with rules detecting PowerShell execution instead of focusing on what PowerShell was calling - it's more important to log `Image is malware` than `ParentImage is PowerShell`.
 
-### secdatasets :construction: WIP
+### secdatasets WIP
 
 Runs through a local copy of [Security-Datasets](https://github.com/OTRF/Security-Datasets), parses the metadata files for techniques, then runs `verify` and `overruled` on each.
 
